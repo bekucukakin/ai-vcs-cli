@@ -149,9 +149,118 @@ public class VcsCliGraph {
     }
 
     // ====================== STATUS ======================
-    private void handleStatus() {
+    private void handleStatus() throws Exception {
+        loadStaging();
+
+        // Staged files
         System.out.println("Staged files:");
-        staging.forEach((k, v) -> System.out.println(" - " + k));
+        staging.forEach((k,v) -> System.out.println(" - " + k));
+
+        // Modified files
+        System.out.println("\nModified files:");
+        List<File> allFiles = resolveFiles(".");
+        for (File f : allFiles) {
+            if (isInsideVcs(f)) continue;
+
+            String currentHash = getFileHash(f);
+            String stagedHash = staging.get(f.getCanonicalPath());
+            String committedHash = getLastCommitFileHash(f);
+
+            boolean modified = false;
+            String statusDesc = "";
+
+            if (committedHash != null && !committedHash.equals(currentHash)) {
+                modified = true;
+                statusDesc = "(modified)";
+            } else if (stagedHash != null && !stagedHash.equals(currentHash)) {
+                modified = true;
+                statusDesc = "(modified, staged)";
+            }
+
+            if (modified) {
+                System.out.println(" - " + f.getCanonicalPath() + " " + statusDesc);
+
+                List<String> oldLines = getCommitFileLines(f, committedHash);
+                List<String> newLines = Files.readAllLines(f.toPath());
+
+                printUnifiedDiff(oldLines, newLines);
+            }
+        }
+    }
+
+    private void printUnifiedDiff(List<String> oldLines, List<String> newLines) {
+        final String RED = "\u001B[31m";
+        final String GREEN = "\u001B[32m";
+        final String RESET = "\u001B[0m";
+
+        int oldLineNum = 1;
+        int newLineNum = 1;
+
+        int max = Math.max(oldLines.size(), newLines.size());
+        boolean inBlock = false;
+
+        for (int i = 0; i < max; i++) {
+            String oldLine = i < oldLines.size() ? oldLines.get(i) : null;
+            String newLine = i < newLines.size() ? newLines.get(i) : null;
+
+            if ((oldLine != null && newLine != null && !oldLine.equals(newLine)) ||
+                    (oldLine != null && newLine == null) ||
+                    (oldLine == null && newLine != null)) {
+
+                if (!inBlock) {
+                    System.out.printf("@@ -%d,%d +%d,%d @@\n", oldLineNum, 1, newLineNum, 1);
+                    inBlock = true;
+                }
+
+                if (oldLine != null && (newLine == null || !oldLine.equals(newLine))) {
+                    System.out.println(RED + "- " + oldLine + RESET);
+                    oldLineNum++;
+                }
+
+                if (newLine != null && (oldLine == null || !oldLine.equals(newLine))) {
+                    System.out.println(GREEN + "+ " + newLine + RESET);
+                    newLineNum++;
+                }
+            } else {
+                oldLineNum++;
+                newLineNum++;
+                inBlock = false;
+            }
+        }
+    }
+
+    private String getLastCommitFileHash(File f) throws Exception {
+        String branch = getCurrentBranch();
+        String commitId = Files.readString(new File(REFS_HEADS_DIR, branch).toPath()).trim();
+        if (commitId.isEmpty()) return null;
+
+        File commitFile = new File(OBJECTS_DIR, commitId.substring(0,2) + "/" + commitId.substring(2));
+        if (!commitFile.exists()) return null;
+
+        Map<String,Object> commit = mapper.readValue(commitFile, HashMap.class);
+        Map<String,String> files = (Map<String,String>) commit.get("files");
+        return files.get(f.getCanonicalPath());
+    }
+    // Commit içindeki dosya satırlarını getir
+    private List<String> getCommitFileLines(File f, String hash) throws Exception {
+        if (hash == null) return Collections.emptyList();
+        File objFile = new File(OBJECTS_DIR, hash.substring(0,2) + "/" + hash.substring(2));
+        if (!objFile.exists()) return Collections.emptyList();
+        return Files.readAllLines(objFile.toPath());
+    }
+
+    // Basit satır bazlı diff
+    private List<String> getLineDiff(List<String> oldLines, List<String> newLines) {
+        List<String> diff = new ArrayList<>();
+        int max = Math.max(oldLines.size(), newLines.size());
+        for (int i = 0; i < max; i++) {
+            String oldLine = i < oldLines.size() ? oldLines.get(i) : "";
+            String newLine = i < newLines.size() ? newLines.get(i) : "";
+            if (!oldLine.equals(newLine)) {
+                diff.add(String.format("-%s | +%s", oldLine, newLine));
+            }
+        }
+        return diff;
     }
 
     // ====================== BRANCH ======================
