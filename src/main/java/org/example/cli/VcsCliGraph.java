@@ -8,6 +8,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.example.service.*;
 import org.springframework.stereotype.Component;
 
 
@@ -16,8 +17,15 @@ import org.springframework.stereotype.Component;
 // servislere bölünecek şuanki hali initial bir demoydu
 // dto exception vs. eklenecek
 
+
+
+
 @Component
 public class VcsCliGraph {
+
+
+    private final InitService initService;
+
 
     private static final File VCS_DIR = new File(".vcs");
     private static final File OBJECTS_DIR = new File(VCS_DIR, "objects");
@@ -30,6 +38,11 @@ public class VcsCliGraph {
     private Map<String, String> staging = new HashMap<>();
     private ObjectMapper mapper = new ObjectMapper();
 
+    public VcsCliGraph(InitService initService) {
+        this.initService = initService;
+    }
+
+
     public void startCLI() throws Exception {
         Scanner sc = new Scanner(System.in);
         System.out.println("Welcome to MiniVCS CLI!");
@@ -41,8 +54,11 @@ public class VcsCliGraph {
             if (parts.length == 0) continue;
 
             switch (parts[0]) {
+                case "help":
+                    printHelp();
+                    break;
                 case "init":
-                    handleInit();
+                    initService.initRepo();
                     break;
                 case "add":
                     handleAdd(parts.length > 1 ? parts[1] : ".");
@@ -54,7 +70,17 @@ public class VcsCliGraph {
                     handleLog();
                     break;
                 case "status":
-                    handleStatus();
+                    boolean showDiff = false;
+                    String targetFile = null;
+
+                    if (parts.length > 1 && parts[1].startsWith("--diff")) {
+                        showDiff = true;
+                        if (parts[1].contains("=")) {
+                            targetFile = parts[1].split("=")[1];
+                        }
+                    }
+
+                    handleStatus(showDiff, targetFile);
                     break;
                 case "branch":
                     handleBranch(parts[1]);
@@ -72,22 +98,19 @@ public class VcsCliGraph {
             }
         }
     }
-
-    // ====================== INIT ======================
-    private void handleInit() throws IOException {
-        if (VCS_DIR.exists()) {
-            System.out.println("Repository already initialized.");
-            return;
-        }
-        OBJECTS_DIR.mkdirs();
-        REFS_HEADS_DIR.mkdirs();
-        LOGS_DIR.mkdirs();
-        HOOKS_DIR.mkdirs();
-
-        Files.writeString(HEAD_FILE.toPath(), "refs/heads/main");
-        Files.writeString(new File(REFS_HEADS_DIR, "main").toPath(), "");
-        saveStaging();
-        System.out.println("Initialized empty MiniVCS repository in " + VCS_DIR.getAbsolutePath());
+    // ====================== HELP ======================
+    private void printHelp() {
+        System.out.println("MiniVCS CLI - Available commands:");
+        System.out.println(" init                : Initialize a new repository");
+        System.out.println(" add <file/dir>      : Stage file(s) for commit (default: all)");
+        System.out.println(" commit <message>    : Commit staged changes with a message");
+        System.out.println(" log                 : Show commit history");
+        System.out.println(" status [--diff=FILE]: Show staged, new, modified, deleted files. Optional diff for a specific file");
+        System.out.println(" branch <name>       : Create a new branch");
+        System.out.println(" checkout <name>     : Switch to a branch");
+        System.out.println(" merge <name>        : Merge another branch into current branch");
+        System.out.println(" help                : Show this help message");
+        System.out.println(" exit                : Exit the CLI");
     }
 
     // ====================== ADD ======================
@@ -156,23 +179,39 @@ public class VcsCliGraph {
     }
 
     // ====================== STATUS ======================
-    private static final String ANSI_RESET = "\u001B[0m";
-    private static final String ANSI_RED = "\u001B[31m";
-    private static final String ANSI_GREEN = "\u001B[32m";
-    private static final String ANSI_YELLOW = "\u001B[33m";
+    private static final String RED = "\u001B[31m";
+    private static final String GREEN = "\u001B[32m";
+    private static final String RESET = "\u001B[0m";
 
-    private void handleStatus() throws Exception {
+    private void printUnifiedDiff(List<String> oldLines, List<String> newLines) {
+        int max = Math.max(oldLines.size(), newLines.size());
+
+        for (int i = 0; i < max; i++) {
+            String oldLine = i < oldLines.size() ? oldLines.get(i) : null;
+            String newLine = i < newLines.size() ? newLines.get(i) : null;
+
+            if (Objects.equals(oldLine, newLine)) {
+                System.out.println("  " + (oldLine != null ? oldLine : ""));
+            } else {
+                if (oldLine != null) {
+                    System.out.println(RED + "- " + oldLine + RESET);
+                }
+                if (newLine != null) {
+                    System.out.println(GREEN + "+ " + newLine + RESET);
+                }
+            }
+        }
+    }
+
+    private void handleStatus(boolean showDiff, String targetFile) throws Exception {
         loadStaging();
 
         System.out.println("Staged files:");
-        staging.forEach((k,v) -> System.out.println(" - " + k));
+        staging.forEach((k, v) -> System.out.println(" - " + k));
 
         System.out.println("\nModified / New / Deleted files:");
 
-        // Tüm commit edilmiş dosyaları topla
         Set<String> committedFiles = getAllCommittedFilePaths();
-
-        // Tüm mevcut dosyalar
         List<File> allFiles = resolveFiles(".");
         Set<String> currentFiles = allFiles.stream()
                 .map(f -> {
@@ -181,7 +220,6 @@ public class VcsCliGraph {
                 })
                 .collect(Collectors.toSet());
 
-        // 1️⃣ Yeni dosyalar ve değişen dosyalar
         for (File f : allFiles) {
             if (isInsideVcs(f)) continue;
             String path = f.getCanonicalPath();
@@ -193,18 +231,43 @@ public class VcsCliGraph {
             boolean isNew = committedHash == null;
             boolean isModified = !isNew && !committedHash.equals(currentHash);
 
-            if (isNew || isModified) {
-                System.out.println(" - " + path + (isNew ? " (new)" : " (modified)"));
+            if (isNew) {
+                System.out.println(" - " + path + " (new)");
+                if (showDiff && (targetFile == null || path.endsWith(targetFile))) {
+                    List<String> newLines = Files.readAllLines(f.toPath());
+                    System.out.println("   Diff:");
+                    for (String line : newLines) {
+                        System.out.println(GREEN + "+ " + line + RESET);
+                    }
+                }
+            } else if (isModified) {
+                System.out.println(" - " + path + " (modified)");
+                if (showDiff && (targetFile == null || path.endsWith(targetFile))) {
+                    List<String> oldLines = getCommitFileLines(f, committedHash);
+                    List<String> newLines = Files.readAllLines(f.toPath());
+                    System.out.println("   Diff:");
+                    printUnifiedDiff(oldLines, newLines);
+                }
             }
         }
 
-        // 2️⃣ Silinmiş dosyalar
         for (String path : committedFiles) {
             if (!currentFiles.contains(path)) {
                 System.out.println(" - " + path + " (deleted)");
+                if (showDiff && (targetFile == null || path.endsWith(path))) {
+                    List<String> oldLines = getCommitFileLines(new File(path), getLastCommitFileHash(new File(path)));
+                    System.out.println("   Diff:");
+                    for (String line : oldLines) {
+                        System.out.println(RED + "- " + line + RESET);
+                    }
+                }
             }
         }
     }
+
+
+
+
 
     // Commit’te olan tüm dosya pathlerini getir
     private Set<String> getAllCommittedFilePaths() throws Exception {
@@ -243,46 +306,7 @@ public class VcsCliGraph {
 
 
 
-    private void printUnifiedDiff(List<String> oldLines, List<String> newLines) {
-        final String RED = "\u001B[31m";
-        final String GREEN = "\u001B[32m";
-        final String RESET = "\u001B[0m";
 
-        int oldLineNum = 1;
-        int newLineNum = 1;
-
-        int max = Math.max(oldLines.size(), newLines.size());
-        boolean inBlock = false;
-
-        for (int i = 0; i < max; i++) {
-            String oldLine = i < oldLines.size() ? oldLines.get(i) : null;
-            String newLine = i < newLines.size() ? newLines.get(i) : null;
-
-            if ((oldLine != null && newLine != null && !oldLine.equals(newLine)) ||
-                    (oldLine != null && newLine == null) ||
-                    (oldLine == null && newLine != null)) {
-
-                if (!inBlock) {
-                    System.out.printf("@@ -%d,%d +%d,%d @@\n", oldLineNum, 1, newLineNum, 1);
-                    inBlock = true;
-                }
-
-                if (oldLine != null && (newLine == null || !oldLine.equals(newLine))) {
-                    System.out.println(RED + "- " + oldLine + RESET);
-                    oldLineNum++;
-                }
-
-                if (newLine != null && (oldLine == null || !oldLine.equals(newLine))) {
-                    System.out.println(GREEN + "+ " + newLine + RESET);
-                    newLineNum++;
-                }
-            } else {
-                oldLineNum++;
-                newLineNum++;
-                inBlock = false;
-            }
-        }
-    }
 
     private String getLastCommitFileHash(File f) throws Exception {
         String branch = getCurrentBranch();
