@@ -5,9 +5,19 @@ import java.nio.file.*;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
+
+
+//TODO: line bazlı kontrol verimliliği kontrol edilecek
+// kullanıcı isterse line bazlı değişiklikleri görebilecek
+// servislere bölünecek şuanki hali initial bir demoydu
+// dto exception vs. eklenecek
+
+
+
 
 @Component
 public class VcsCliGraph {
@@ -149,44 +159,92 @@ public class VcsCliGraph {
     }
 
     // ====================== STATUS ======================
+    private static final String ANSI_RESET = "\u001B[0m";
+    private static final String ANSI_RED = "\u001B[31m";
+    private static final String ANSI_GREEN = "\u001B[32m";
+    private static final String ANSI_YELLOW = "\u001B[33m";
+
     private void handleStatus() throws Exception {
         loadStaging();
 
-        // Staged files
         System.out.println("Staged files:");
         staging.forEach((k,v) -> System.out.println(" - " + k));
 
-        // Modified files
-        System.out.println("\nModified files:");
+        System.out.println("\nModified / New / Deleted files:");
+
+        // Tüm commit edilmiş dosyaları topla
+        Set<String> committedFiles = getAllCommittedFilePaths();
+
+        // Tüm mevcut dosyalar
         List<File> allFiles = resolveFiles(".");
+        Set<String> currentFiles = allFiles.stream()
+                .map(f -> {
+                    try { return f.getCanonicalPath(); }
+                    catch (IOException e) { return ""; }
+                })
+                .collect(Collectors.toSet());
+
+        // 1️⃣ Yeni dosyalar ve değişen dosyalar
         for (File f : allFiles) {
             if (isInsideVcs(f)) continue;
+            String path = f.getCanonicalPath();
+            if (staging.containsKey(path)) continue;
 
-            String currentHash = getFileHash(f);
-            String stagedHash = staging.get(f.getCanonicalPath());
             String committedHash = getLastCommitFileHash(f);
+            String currentHash = getFileHash(f);
 
-            boolean modified = false;
-            String statusDesc = "";
+            boolean isNew = committedHash == null;
+            boolean isModified = !isNew && !committedHash.equals(currentHash);
 
-            if (committedHash != null && !committedHash.equals(currentHash)) {
-                modified = true;
-                statusDesc = "(modified)";
-            } else if (stagedHash != null && !stagedHash.equals(currentHash)) {
-                modified = true;
-                statusDesc = "(modified, staged)";
+            if (isNew || isModified) {
+                System.out.println(" - " + path + (isNew ? " (new)" : " (modified)"));
             }
+        }
 
-            if (modified) {
-                System.out.println(" - " + f.getCanonicalPath() + " " + statusDesc);
-
-                List<String> oldLines = getCommitFileLines(f, committedHash);
-                List<String> newLines = Files.readAllLines(f.toPath());
-
-                printUnifiedDiff(oldLines, newLines);
+        // 2️⃣ Silinmiş dosyalar
+        for (String path : committedFiles) {
+            if (!currentFiles.contains(path)) {
+                System.out.println(" - " + path + " (deleted)");
             }
         }
     }
+
+    // Commit’te olan tüm dosya pathlerini getir
+    private Set<String> getAllCommittedFilePaths() throws Exception {
+        String branch = getCurrentBranch();
+        String commitId = Files.readString(new File(REFS_HEADS_DIR, branch).toPath()).trim();
+        if (commitId.isEmpty()) return Collections.emptySet();
+
+        File commitFile = new File(OBJECTS_DIR, commitId.substring(0,2) + "/" + commitId.substring(2));
+        if (!commitFile.exists()) return Collections.emptySet();
+
+        Map<String,Object> commit = mapper.readValue(commitFile, HashMap.class);
+        Map<String,String> files = (Map<String,String>) commit.get("files");
+        return files.keySet();
+    }
+
+
+    private List<String> getLineDiff(List<String> oldLines, List<String> newLines) {
+        List<String> diff = new ArrayList<>();
+        int max = Math.max(oldLines.size(), newLines.size());
+        for (int i = 0; i < max; i++) {
+            String oldLine = i < oldLines.size() ? oldLines.get(i) : "";
+            String newLine = i < newLines.size() ? newLines.get(i) : "";
+            int displayLine = i + 1;
+            if (oldLine.equals(newLine)) continue;
+
+            if (oldLine.isEmpty()) {
+                diff.add("+" + displayLine + " | " + newLine); // Yeni satır
+            } else if (newLine.isEmpty()) {
+                diff.add("-" + displayLine + " | " + oldLine); // Silinen satır
+            } else {
+                diff.add("~" + displayLine + " | -" + oldLine + " | +" + newLine); // Değiştirilen satır
+            }
+        }
+        return diff;
+    }
+
+
 
     private void printUnifiedDiff(List<String> oldLines, List<String> newLines) {
         final String RED = "\u001B[31m";
@@ -249,19 +307,19 @@ public class VcsCliGraph {
         return Files.readAllLines(objFile.toPath());
     }
 
-    // Basit satır bazlı diff
-    private List<String> getLineDiff(List<String> oldLines, List<String> newLines) {
-        List<String> diff = new ArrayList<>();
-        int max = Math.max(oldLines.size(), newLines.size());
-        for (int i = 0; i < max; i++) {
-            String oldLine = i < oldLines.size() ? oldLines.get(i) : "";
-            String newLine = i < newLines.size() ? newLines.get(i) : "";
-            if (!oldLine.equals(newLine)) {
-                diff.add(String.format("-%s | +%s", oldLine, newLine));
-            }
-        }
-        return diff;
-    }
+//    // Basit satır bazlı diff
+//    private List<String> getLineDiff(List<String> oldLines, List<String> newLines) {
+//        List<String> diff = new ArrayList<>();
+//        int max = Math.max(oldLines.size(), newLines.size());
+//        for (int i = 0; i < max; i++) {
+//            String oldLine = i < oldLines.size() ? oldLines.get(i) : "";
+//            String newLine = i < newLines.size() ? newLines.get(i) : "";
+//            if (!oldLine.equals(newLine)) {
+//                diff.add(String.format("-%s | +%s", oldLine, newLine));
+//            }
+//        }
+//        return diff;
+//    }
 
     // ====================== BRANCH ======================
     private void handleBranch(String branchName) throws IOException {
