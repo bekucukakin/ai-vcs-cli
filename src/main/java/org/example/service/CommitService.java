@@ -1,9 +1,7 @@
 package org.example.service;
 
-import java.io.File;
+import java.util.Map;
 
 public interface CommitService {
-    void commit(String message) throws Exception;
-    void log() throws Exception;
-    String getLastCommitFileHash(File file) throws Exception;
+    void commit(String message, Map<String, String> stagedFiles) throws Exception;
 }

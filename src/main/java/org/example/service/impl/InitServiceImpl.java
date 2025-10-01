@@ -7,15 +7,10 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 
+import static org.example.constant.VcsConstants.*;
+
 @Service
 public class InitServiceImpl implements InitService {
-    private static final File VCS_DIR = new File(".vcs");
-    private static final File OBJECTS_DIR = new File(VCS_DIR, "objects");
-    private static final File REFS_HEADS_DIR = new File(VCS_DIR, "refs/heads");
-    private static final File HEAD_FILE = new File(VCS_DIR, "HEAD");
-    private static final File LOGS_DIR = new File(VCS_DIR, "logs/refs/heads");
-    private static final File HOOKS_DIR = new File(VCS_DIR, "hooks");
-    private static final File STAGING_FILE = new File(VCS_DIR, "staging.json");
 
     @Override
     public void initRepo() throws IOException {
